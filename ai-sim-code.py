@@ -66,43 +66,6 @@ class Cluster:
 # 3. 负载生成器 (Zipf Workload Generator)
 # ==========================================
 
-def generate_workload(config: SimConfig, cluster: Cluster) -> List[TokenRequest]:
-    print(f"Generating Workload: {config.num_tokens_total} tokens, Zipf alpha={config.zipf_alpha}...")
-    
-    np.random.seed(42) # 固定随机种子以便复现
-    requests = []
-    
-    # 1. 生成源 GPU (假设 Token 均匀分布在所有 GPU 上)
-    src_gpus = np.random.randint(0, config.total_gpus, config.num_tokens_total)
-    
-    # 2. 生成目标专家 (Zipf 分布)
-    # Zipf 生成的是 [1, inf)，我们需要映射到 [0, total_experts-1]
-    # 采样数量稍微多一点，以防去重后不足 top_k
-    raw_samples = np.random.zipf(config.zipf_alpha, config.num_tokens_total * config.top_k * 2)
-    sample_idx = 0
-    
-    for i in range(config.num_tokens_total):
-        # 为每个 Token 选取 Top-k 个不重复的专家
-        chosen_experts = set()
-        while len(chosen_experts) < config.top_k:
-            # 简单的取模哈希，将 Zipf 长尾映射到专家 ID
-            eid = (raw_samples[sample_idx] - 1) % config.total_experts
-            chosen_experts.add(eid)
-            sample_idx += 1
-            if sample_idx >= len(raw_samples): # 如果用完了重新生成
-                raw_samples = np.random.zipf(config.zipf_alpha, config.num_tokens_total * config.top_k)
-                sample_idx = 0
-        
-        req = TokenRequest(
-            token_id=i,
-            src_gpu=src_gpus[i],
-            target_experts=list(chosen_experts)
-        )
-        cluster.resolve_targets(req)
-        requests.append(req)
-        
-    return requests
-
 # ==========================================
 # 4. 仿真器核心 (Simulator)
 # ==========================================
