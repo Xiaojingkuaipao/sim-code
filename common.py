@@ -120,11 +120,28 @@ class Cluster:
         req.target_gpus = [self.expert_to_gpu[eid] for eid in req.target_experts]
 
 
+class GPU:
+    def __init__(self, global_id, node_id, local_rank):
+        self.id = global_id
+        self.node_id = node_id
+        self.local_rank = local_rank
+
+        self.inter_tx = 0
+        self.inter_rx = 0
+        self.intra_tx = 0
+        self.intra_rx = 0
+    
+    def reset(self):
+        self.inter_tx = 0
+        self.inter_rx = 0
+        self.intra_tx = 0
+        self.intra_rx = 0
+        
+
 def generate_workload(config: SimConfig, cluster: Cluster, output_dir):
     '''
     生成config.iter_num个需求文件保存到output_dir中
     '''
-    # TODO 主函数入口加入workload_output_dir参数
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
