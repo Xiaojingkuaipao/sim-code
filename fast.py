@@ -36,7 +36,7 @@ class FASTSimulator:
         algo_bw = total_payload / (total_latency * self.config.total_gpus)
 
         print(f"="*50)
-        print(f"DeepEP Final Results")
+        print(f"FAST Final Results")
         print(f"="*50)
         print(f"Total Latency            : {total_latency:.6f} s")
         print(f"Avg Layer Latency        : {avg_latency * 1000:.4f} ms")
@@ -95,7 +95,7 @@ class FASTSimulator:
         # padding node矩阵，用于brikhoff分解
         row_sums = np.sum(node_traffic_matrix, axis=1)
         col_sums = np.sum(node_traffic_matrix, axis=0)
-        max_load = np.max(np.max(row_sums), np.max(col_sums))
+        max_load = np.max([np.max(row_sums), np.max(col_sums)])
 
         # FAST已经论证了瓶颈仍然是瓶颈，跨机传输时间仍然是由于负载最大的那个node决定，所以可以靠这个式子计算出第二阶段总时间
         inter_traffic_latency = (max_load * self.config.token_size) / self.config.bw_inter
@@ -196,3 +196,11 @@ class FASTSimulator:
             remaining_padding -= stage
             
         return stages[0], remaining_padding
+    
+if __name__ == "__main__":
+    print("Test FAST Simulation")
+    args = get_args()
+    config = get_config(args)
+    cluster = Cluster(config)
+    sim = FASTSimulator(config, cluster)
+    sim.run_simulation(args.workload_output_dir)
