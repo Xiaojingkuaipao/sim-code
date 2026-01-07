@@ -29,7 +29,8 @@ class SimConfig:
             top_k: int=2,
             zipf_alpha: float=1.2,
             num_layers: int=12,
-            iter_num: int=10
+            iter_num: int=10,
+            init_pattern :str="deepEP"
     ):
         '''
         :param num_nodes: 一共有多少个节点
@@ -71,6 +72,7 @@ class SimConfig:
         self.iter_num = iter_num
         self.dataset_toknes = self.num_tokens * self.iter_num
         self.num_layers = num_layers
+        self.init_pattern = init_pattern
     
     @property
     def total_gpus(self):
@@ -175,6 +177,7 @@ def get_args():
     parser.add_argument("--num_layers", default=1, type=int)
     parser.add_argument("--iter_num", default=1, type=int)
     parser.add_argument("--workload_output_dir", default="./workload", type=str)
+    parser.add_argument("--init_pattern", default="deepEP", type=str, choices=["deepEP", "ours"])
     return parser.parse_args()
 
 def get_config(args) -> SimConfig:

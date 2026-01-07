@@ -136,11 +136,14 @@ class OurSimulator:
         # 初始化接收队列和接收负载矩阵
         for flow in all_flows:
             target_node = flow.target_node
-            # method1:默认接收者和deepEP相同，为同号卡
-            sender_rank = flow.sender % self.config.gpus_per_node
-            receiver = target_node * self.config.gpus_per_node + sender_rank
-            # method2:默认接收者为flow.target_gpus中的第一个gpu
-            # TODO
+
+            if self.config.init_pattern == "deepEP":
+                # method1:默认接收者和deepEP相同，为同号卡
+                sender_rank = flow.sender % self.config.gpus_per_node
+                receiver = target_node * self.config.gpus_per_node + sender_rank
+            else:
+                # method2:默认接收者为flow.target_gpus中的第一个gpu
+                receiver = flow.target_gpus[0]
 
             flow.receiver = receiver
             receiver_rank = receiver % self.config.gpus_per_node
