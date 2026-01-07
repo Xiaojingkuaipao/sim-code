@@ -3,6 +3,7 @@ import pickle
 from collections import defaultdict
 from tqdm import tqdm
 from common import *
+from analyze_workload import analyze_post_workload
 
 
 class DeepEPSimulator:
@@ -99,7 +100,7 @@ class DeepEPSimulator:
                     src_gpu.inter_tx += 1
                     layer_inter_traffic_tokens += 1
 
-                    for target_gpu_id in target_gpu_ids:
+                    for target_gpu_id in set(target_gpu_ids):
                         if target_gpu_id != proxy_gpu.id:
                             proxy_gpu.intra_tx += 1
                             self.gpus[target_gpu_id].intra_rx += 1
@@ -114,6 +115,8 @@ class DeepEPSimulator:
         # 因为机内转发和机间转发是同时进行的，所以all-to-all通信完成的时间取决于最慢的那个GPU的机内/机间通信操作
         max_inter_load = 0
         max_intra_load = 0
+        inter_strag_gpu = -1
+        intra_strag_gpu = -1
 
         for gpu in self.gpus:
             max_inter_load = max(max_inter_load, gpu.inter_rx, gpu.inter_tx)
@@ -123,6 +126,7 @@ class DeepEPSimulator:
         time_intra = (max_intra_load * self.config.token_size) / self.config.bw_intra
 
         layer_time = max(time_inter, time_intra)
+        analyze_post_workload(self.gpus, "deepEP.png")
 
         return layer_time, layer_inter_traffic_tokens * self.config.token_size
     

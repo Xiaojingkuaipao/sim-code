@@ -136,77 +136,27 @@ class GPU:
         self.inter_rx = 0
         self.intra_tx = 0
         self.intra_rx = 0
-        
 
-def generate_workload(config: SimConfig, cluster: Cluster, output_dir):
+class Flow:
     '''
-    生成config.iter_num个需求文件保存到output_dir中
+    Attribute:
+        token_id:       同一layer中token_id是一致的
+        src_gpu:        此token的源GPU
+        target_node:    这个flow的目的node
+        target_gpus:    token在目标节点内所有的目标GPU列表，后续分发使用
+        size:           恒定为1，因为一个(token,node)流只会产生一份跨机传输开销
+        sender:         对应问题建模中的g_x
+        receiver:       对应问题建模中的g_y
     '''
+    def __init__(self, token_id, src_gpu, target_node, target_gpus):
+        self.token_id = token_id
+        self.src_gpu = src_gpu
+        self.target_node = target_node
+        self.target_gpus = target_gpus
+        self.size = 1
 
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    total_requests_count = 0
-    print(f"Start Generate Wrokloads......")
-    print(f" - Iter Num: {config.iter_num}")
-    print(f" - Layer Num: {config.num_layers}")
-    print(f" - Token Num Per Iter: {config.num_tokens}")
-    print(f" - Zipf Alpha: {config.zipf_alpha}")
-
-    tokens_per_gpu = config.num_tokens // config.total_gpus
-    src_gpu_base = np.repeat(np.arange(0, config.total_gpus), tokens_per_gpu)
-
-    # 如果没除尽就把剩下的一些token随机分配给GPU
-    if len(src_gpu_base) < config.num_tokens:
-        diff = config.num_tokens - len(src_gpu_base)
-        src_gpu_base = np.concatenate([src_gpu_base, np.random.randint(0, config.total_gpus, diff)])
-
-    for iter_idx in range(config.iter_num):
-
-        iter_data = []
-        
-        print(f"Generating Iter:{iter_idx}/{config.iter_num - 1}...")
-        for layer_id in tqdm(range(config.num_layers), desc="Layers"):
-            layer_request = []
-
-            # zipf [1, inf) -> [0, config.total_experts - 1]
-            raw_samples = np.random.zipf(a=config.zipf_alpha, size=(config.num_tokens, config.top_k))
-            target_experts_matrix = (raw_samples - 1) % config.total_experts
-
-            for token_id in range(config.num_tokens):
-                src_gpu = src_gpu_base[token_id]
-
-                target_experts = target_experts_matrix[token_id].tolist()
-
-                # 如果目标专家数小于topk，也就是一个token有重复的目标专家，是不可能的
-                if len(set(target_experts)) < config.top_k:
-                    unique_experts = list(set(target_experts))
-                    while len(set(unique_experts)) < config.top_k:
-                        new_expert = np.random.randint(0, config.total_experts)
-                        if new_expert not in unique_experts:
-                            unique_experts.append(new_expert)
-                    target_experts = unique_experts
-                
-                req = TokenRequest(
-                    token_id=token_id, 
-                    src_gpu=src_gpu, 
-                    target_experts=target_experts
-                )
-
-                cluster.resolve_targets(req=req)
-                layer_request.append(req)
-            
-            iter_data.append(layer_request)
-            total_requests_count += len(layer_request)
-        
-        file_path = os.path.join(output_dir, f"iter_{iter_idx}_requests.pkl")
-        with open(file_path, "wb") as f:
-            pickle.dump(iter_data, f)
-        
-        del iter_data
-    
-    print(f"Workload Generation Complete!")
-    print(f"Generated {total_requests_count} token requests in {output_dir}")
+        self.sender = src_gpu
+        self.receiver = -1
 
 
 def get_args():
@@ -214,16 +164,16 @@ def get_args():
     parser.add_argument("--num_nodes", default=4, type=int)
     parser.add_argument("--gpus_per_node", default=8, type=int)
     parser.add_argument("--experts_per_gpu", default=2, type=int)
-    parser.add_argument("--bw_inter", default=50.0, type=float)
+    parser.add_argument("--bw_inter", default=25.0, type=float)
     parser.add_argument("--bw_intra", default=400.0, type=float)
     parser.add_argument("--seq_len", default=8192, type=int)
     parser.add_argument("--batch_size", default=2, type=int)
     parser.add_argument("--embed_size", default=5120, type=int)
     parser.add_argument("--dtype", default="float16", type=str)
     parser.add_argument("--topk", default=4, type=int)
-    parser.add_argument("--zipf_alpha", default=1.2, type=float)
+    parser.add_argument("--zipf_alpha", default=1.01, type=float)
     parser.add_argument("--num_layers", default=1, type=int)
-    parser.add_argument("--iter_num", default=10, type=int)
+    parser.add_argument("--iter_num", default=1, type=int)
     parser.add_argument("--workload_output_dir", default="./workload", type=str)
     return parser.parse_args()
 
@@ -244,10 +194,3 @@ def get_config(args) -> SimConfig:
         iter_num=args.iter_num
     )
     return config
-
-if __name__ == "__main__":
-    print("Test Generate Workload")
-    args = get_args()
-    config = get_config(args)
-    cluster = Cluster(config)
-    generate_workload(config, cluster, args.workload_output_dir)
