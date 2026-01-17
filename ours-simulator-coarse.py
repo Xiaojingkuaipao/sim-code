@@ -236,19 +236,22 @@ class OurSimulatorCoarse:
             self.gpus[flow.receiver].inter_rx += flow.size
             total_inter_tokens += flow.size
 
-            # 源主机offload
+        processed_source_tokens = set()
+        
+        for flow in all_flows:
+            # 源端节点中继
             if flow.src_gpu != flow.sender:
-                self.gpus[flow.src_gpu].intra_tx += flow.size
-                self.gpus[flow.sender].intra_rx += flow.size
+                token_key = (flow.src_gpu, flow.sender, flow.token_id)
+                if token_key not in processed_source_tokens:
+                    self.gpus[flow.src_gpu].intra_tx += 1
+                    self.gpus[flow.sender].intra_rx += 1
+                    processed_source_tokens.add(token_key)
             
-            # 目的主机分发
-            for req in flow.requests:
-                for target_gpu in set(req.target_gpus):
-                    t_node = target_gpu // self.config.gpus_per_node
-                    if t_node == flow.target_node:
-                        if flow.receiver != target_gpu:
-                            self.gpus[flow.receiver].intra_tx += 1
-                            self.gpus[target_gpu].intra_rx += 1
+            # 目的端分发
+            for target_gpu in set(flow.target_gpus):
+                if flow.receiver != target_gpu:
+                    self.gpus[flow.receiver].intra_tx += 1
+                    self.gpus[target_gpu].intra_rx += 1
         
         # 计算瓶颈时间
         max_inter_load = 0

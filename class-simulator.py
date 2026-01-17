@@ -3,21 +3,30 @@ import pickle
 import numpy as np
 from common import *
 from collections import defaultdict, deque
-from analyze_workload import analyze_post_workload
+from analyze_workload import *
 import time
 
+class TokenClass:
+    def __init__(self, class_id, src_gpu, target_node_set):
+        self.class_id = class_id
+        self.src_gpu = src_gpu
+        self.target_node_set = frozenset(target_node_set)
+        self.weight = len(target_node_set)
+        self.tokens :list[TokenRequest] = []
+        self.size = 0
+        self.sender = src_gpu
 
-class OurSimulator:
-    def __init__(self, config: SimConfig, cluster: Cluster):
+        
+class ClassSimulator:
+    def __init__(self, config :SimConfig, cluster :Cluster):
         self.config = config
         self.cluster = cluster
         self.gpus :list[GPU] = []
-
         for i in range(config.total_gpus):
-            node_id = i // config.gpus_per_node
-            local_rank = i % config.gpus_per_node
-            self.gpus.append(GPU(i, node_id, local_rank))
-    
+                node_id = i // config.gpus_per_node
+                local_rank = i % config.gpus_per_node
+                self.gpus.append(GPU(i, node_id, local_rank))
+
     def get_gpu_id(self, node_id, local_rank):
         return node_id * self.config.gpus_per_node + local_rank
     
@@ -56,80 +65,133 @@ class OurSimulator:
         print(f"="*50)
 
 
+    def simulate_layer(self, requests :list[TokenRequest]):
 
-    def simulate_layer(self, requests: list[TokenRequest]):
-        '''
-        给定一个layer的token request
-        返回这一层的通信时间（s），以及这一层的通信量（kb）
-
-        step1 将TokenRequest对象转成Flow对象
-        step2 执行算法第二步，发送端负载均衡
-        step3 执行算法第三步，实现接收端负载均衡
-        step4 计算总开销
-        '''
-
-        # 上一轮结束后清空负载
         for gpu in self.gpus:
             gpu.reset()
+        
         start = time.perf_counter()
-        # 存储所有的(token node) 流
-        all_flows: list[Flow] = []
+        class_map :dict[tuple[int, frozenset[int]], TokenClass] = {}
+
         for req in requests:
+
             src_node = req.src_gpu // self.config.gpus_per_node
-            # 存储(node_id, target_gpus)对，因为一个token request会产生多个token node对
-            target_node_gpu = defaultdict(list)
+
+            target_nodes = set()
+            
             for target_gpu in set(req.target_gpus):
                 target_node = target_gpu // self.config.gpus_per_node
+                
                 if src_node != target_node:
-                    target_node_gpu[target_node].append(target_gpu)
+                    target_nodes.add(target_node)
                 else:
                     if req.src_gpu != target_gpu:
                         self.gpus[req.src_gpu].intra_tx += 1
                         self.gpus[target_gpu].intra_rx += 1
-            for target_node, target_gpus in target_node_gpu.items():
-                all_flows.append(Flow(req.token_id, req.src_gpu, target_node, target_gpus))
+            if not target_nodes:
+                continue
+
+            key = (req.src_gpu, frozenset(target_nodes))
+            if key not in class_map:
+                class_map[key] = TokenClass(len(class_map), req.src_gpu, target_nodes)
+            
+            class_map[key].size += 1
+            class_map[key].tokens.append(req)
         
-        # step2 发送端负载均衡
-        gpu_send_queue :defaultdict[int, deque[Flow]]= defaultdict(deque)
-        gpu_send_loads = np.zeros((self.config.num_nodes, self.config.gpus_per_node), dtype=int)
+        all_classes :list[TokenClass] = list(class_map.values())
 
-        # 统计每个GPU的发送负载
-        for flow in all_flows:
-            flow.sender = flow.src_gpu
-            gpu_send_queue[flow.src_gpu].append(flow)
+        # 发送端负载均衡
+        gpu_send_load = np.zeros((self.config.num_nodes, self.config.gpus_per_node), dtype=int)
+        gpu_send_queue :defaultdict[int, list[TokenClass]] = defaultdict(list)
 
-            src_node = flow.src_gpu // self.config.gpus_per_node
-            src_rank = flow.src_gpu % self.config.gpus_per_node
-            gpu_send_loads[src_node][src_rank] += 1
+        for c in all_classes:
+            src_node = c.src_gpu // self.config.gpus_per_node
+            src_rank = c.src_gpu % self.config.gpus_per_node
+
+            gpu_send_queue[c.src_gpu].append(c)
+            gpu_send_load[src_node][src_rank] += c.size * c.weight
         
         for node_id in range(self.config.num_nodes):
-            current_loads = gpu_send_loads[node_id]
+            current_load = gpu_send_load[node_id]
 
-            max_iter = len(all_flows) // self.config.num_nodes + 100
-            for _ in range(max_iter):
-                g_h = np.argmax(current_loads)
-                g_c = np.argmin(current_loads)
+            for _ in range(100):
+                g_h = np.argmax(current_load)
+                g_c = np.argmin(current_load)
 
-                max_load = current_loads[g_h]
-                min_load = current_loads[g_c]
+                max_load = current_load[g_h]
+                min_load = current_load[g_c]
 
                 if max_load <= min_load + 1:
                     break
-
+                
                 hot_gpu_id = self.get_gpu_id(node_id, g_h)
                 cold_gpu_id = self.get_gpu_id(node_id, g_c)
 
-                # 选择一个flow从hot gpu转移到cold gpu
-                # 由于flow size都是1，所以选哪个都一样
-                move_flow = gpu_send_queue[hot_gpu_id].pop()
-                # 转移到cold_gpu上
-                move_flow.sender = cold_gpu_id
+                best_k = 0
+                best_class = None
+                best_gain = 0
+
+                for c in gpu_send_queue[hot_gpu_id]:
+
+                    if c.size == 0: continue
+
+                    diff = max_load - min_load
+                    k_ideal = diff // (2 * c.weight)
+
+                    k = min(c.size, k_ideal)
+
+                    if k <= 0: continue
+
+                    current_load_copy = np.copy(current_load)
+                    current_load_copy[g_h] -= k * c.weight
+                    current_load_copy[g_c] += k * c.weight
+                    
+                    new_bottleneck = np.max(current_load_copy)
+
+                    if new_bottleneck < max_load:
+                        gain = max_load - new_bottleneck
+                        if gain > best_gain:
+                            best_k = k
+                            best_class = c
                 
-                gpu_send_queue[cold_gpu_id].append(move_flow)
-                current_loads[g_h] -= 1
-                current_loads[g_c] += 1
+                if best_k > 0 and best_class:
+                    move_tokens = []
+                    for _ in range(best_k):
+                        move_tokens.append(best_class.tokens.pop())
+                    best_class.size -= best_k
+
+                    new_class = TokenClass(-1, best_class.src_gpu, best_class.target_node_set)
+                    new_class.size = best_k
+                    new_class.tokens = move_tokens
+                    new_class.sender = cold_gpu_id
+                    gpu_send_queue[cold_gpu_id].append(new_class)
+
+                    current_load[g_h] -= best_k * best_class.weight
+                    current_load[g_c] += best_k * best_class.weight
+                else:
+                    break
         
-        # step3 接收端负载均衡
+        # 将第一阶段已经调度完成的所有token class改写成flow，并存入all_flows中，用于接收端负载均衡调度
+        # 第一阶段调度完成的token class都在gpu_send_queue中，遍历gpu_send_queue并创建all_flows
+        all_flows :list[Flow] = []
+        for send_queue in gpu_send_queue.values():
+            for c in send_queue:
+                if c.size == 0: continue
+
+                for target_node in c.target_node_set:
+                    for token in c.tokens:
+                        target_gpus = []
+                        for target_gpu in token.target_gpus:
+                            t_node = target_gpu // self.config.gpus_per_node
+                            if t_node == target_node:
+                                target_gpus.append(target_gpu)
+
+                        flow = Flow(token.token_id, token.src_gpu, target_node, target_gpus)
+
+                        flow.sender = c.sender
+                        all_flows.append(flow)
+        
+        # 接收端负载均衡
         gpu_recv_queue :defaultdict[int, deque[Flow]] = defaultdict(deque)
         gpu_recv_load = np.zeros((self.config.num_nodes, self.config.gpus_per_node), dtype=int)
         
@@ -177,7 +239,6 @@ class OurSimulator:
         end = time.perf_counter()
         print(f"调度总开销：{(end - start) * 1000:.3f} ms")
         # step4 计算总开销
-        
         total_inter_token = 0
         for flow in all_flows:
             # 计算机间负载
@@ -213,7 +274,7 @@ class OurSimulator:
             max_inter_load = max(max_inter_load, gpu.inter_rx, gpu.inter_tx)
             max_intra_load = max(max_intra_load, gpu.intra_rx, gpu.intra_tx)
 
-        analyze_post_workload(self.gpus, "ours.png")
+        analyze_post_workload(self.gpus, "our-class.png")
         
         time_inter = (max_inter_load * self.config.token_size) / self.config.bw_inter
         time_intra = (max_intra_load * self.config.token_size) / self.config.bw_intra
@@ -226,5 +287,5 @@ if __name__ == "__main__":
     args = get_args()
     config = get_config(args)
     cluster = Cluster(config)
-    simulator = OurSimulator(config, cluster)
+    simulator = ClassSimulator(config, cluster)
     simulator.run_simulation(args.workload_output_dir)
