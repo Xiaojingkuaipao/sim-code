@@ -259,6 +259,99 @@ def generate_workload_custom(
     print(f"Workload Generation Complete!")
     print(f"Generated {total_requests_count} token requests in {output_dir}")
 
+
+def generate_workload_zipf_custom(config: SimConfig, cluster: Cluster, output_dir: str):
+    '''
+    生成标准的有限域 Zipf 分布负载。
+    完美支持 config.zipf_alpha 在 0.0 ~ 1.0 之间的取值。
+    '''
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    total_requests_count = 0
+    print(f"Start Generate Workloads (Standard Bounded Zipf)...")
+    print(f" - Iter Num: {config.iter_num}")
+    print(f" - Layer Num: {config.num_layers}")
+    print(f" - Token Num Per Iter: {config.num_tokens}")
+    print(f" - Zipf Alpha: {config.zipf_alpha} (Supports 0.0 ~ 1.0)")
+
+    # 1. 源 GPU 分布 (均匀分布)
+    tokens_per_gpu = config.num_tokens // config.total_gpus
+    src_gpu_base = np.repeat(np.arange(0, config.total_gpus), tokens_per_gpu)
+    if len(src_gpu_base) < config.num_tokens:
+        diff = config.num_tokens - len(src_gpu_base)
+        src_gpu_base = np.concatenate([src_gpu_base, np.random.randint(0, config.total_gpus, diff)])
+
+    # =========================================================
+    # 核心修改：手动构建 Bounded Zipf 概率分布
+    # =========================================================
+    N = config.total_experts
+    alpha = config.zipf_alpha
+    
+    # 排名 1 到 N
+    ranks = np.arange(1, N + 1)
+    
+    # 计算权重 1 / (k^alpha)
+    # 如果 alpha = 0，weights 全是 1，变成均匀分布
+    weights = 1.0 / np.power(ranks, alpha)
+    
+    # 归一化，得到真正的概率分布向量
+    zipf_prob_vector = weights / np.sum(weights)
+    # =========================================================
+
+    for iter_idx in range(config.iter_num):
+        iter_data =[]
+        
+        print(f"Generating Iter:{iter_idx}/{config.iter_num - 1}...")
+        for layer_id in tqdm(range(config.num_layers), desc="Layers"):
+            layer_request =[]
+
+            # 批量采样：使用构建好的 zipf_prob_vector
+            raw_samples = np.random.choice(
+                N, # 专家 ID 从 0 到 N-1
+                size=(config.num_tokens, config.top_k * 2),
+                replace=True,
+                p=zipf_prob_vector # 严格按照 Zipf 概率采样
+            )
+
+            for token_id in range(config.num_tokens):
+                src_gpu = src_gpu_base[token_id]
+                candidate_experts = raw_samples[token_id]
+
+                target_experts =[]
+                for exp in candidate_experts:
+                    exp = int(exp)
+                    if exp not in target_experts:
+                        target_experts.append(exp)
+                        if len(target_experts) == config.top_k:
+                            break
+                
+                while len(target_experts) < config.top_k:
+                    new_exp = int(np.random.randint(0, N))
+                    if new_exp not in target_experts:
+                        target_experts.append(new_exp)
+                
+                req = TokenRequest(
+                    token_id=token_id,
+                    src_gpu=src_gpu,
+                    target_experts=target_experts,
+                )
+
+                cluster.resolve_targets(req)
+                layer_request.append(req)
+            
+            iter_data.append(layer_request)
+            total_requests_count += len(layer_request)
+        
+        file_path = os.path.join(output_dir, f"iter_{iter_idx}_requests.pkl")
+        with open(file_path, "wb") as f:
+            pickle.dump(iter_data, f)
+        
+        del iter_data
+        
+    print(f"Workload Generation Complete!")
+    print(f"Generated {total_requests_count} token requests in {output_dir}")
+
 if __name__ == "__main__":
     print("Test Generate Workload")
     args = get_args()
@@ -268,5 +361,6 @@ if __name__ == "__main__":
     hot_traffic_ratio = 0.5
     # generate_workload_zipf(config, cluster, args.workload_output_dir)
     # generate_workload_dirichlet(config, cluster, args.workload_output_dir)
-    generate_workload_custom(config, cluster, args.workload_output_dir, hot_experts, hot_traffic_ratio)
+    # generate_workload_custom(config, cluster, args.workload_output_dir, hot_experts, hot_traffic_ratio)
+    generate_workload_zipf_custom(config, cluster, args.workload_output_dir)
     analyze_pkl_workload(args.workload_output_dir, config.total_gpus)

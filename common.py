@@ -173,7 +173,7 @@ def get_args():
     parser.add_argument("--embed_size", default=5120, type=int)
     parser.add_argument("--dtype", default="float16", type=str)
     parser.add_argument("--topk", default=4, type=int)
-    parser.add_argument("--zipf_alpha", default=1.01, type=float)
+    parser.add_argument("--zipf_alpha", default=0.25, type=float)
     parser.add_argument("--num_layers", default=1, type=int)
     parser.add_argument("--iter_num", default=1, type=int)
     parser.add_argument("--workload_output_dir", default="./workload", type=str)
