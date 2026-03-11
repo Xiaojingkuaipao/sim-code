@@ -165,7 +165,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Simulation Experiment")
     parser.add_argument("--num_nodes", default=4, type=int)
     parser.add_argument("--gpus_per_node", default=8, type=int)
-    parser.add_argument("--experts_per_gpu", default=2, type=int)
+    parser.add_argument("--experts_per_gpu", default=1, type=int)
     parser.add_argument("--bw_inter", default=25.0, type=float)
     parser.add_argument("--bw_intra", default=400.0, type=float)
     parser.add_argument("--seq_len", default=8192, type=int)

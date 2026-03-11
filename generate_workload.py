@@ -4,7 +4,7 @@ import numpy as np
 import pickle
 from tqdm import tqdm
 from common import *
-from analyze_workload import analyze_pkl_workload
+from analyze_workload import *
 
 def generate_workload_zipf(config: SimConfig, cluster: Cluster, output_dir):
     '''
@@ -352,6 +352,143 @@ def generate_workload_zipf_custom(config: SimConfig, cluster: Cluster, output_di
     print(f"Workload Generation Complete!")
     print(f"Generated {total_requests_count} token requests in {output_dir}")
 
+def generate_workload_bimodal_skew(
+        config: SimConfig, 
+        cluster: Cluster, 
+        output_dir: str, 
+        hot_ranks: list[int] = [0, 1], 
+        hot_remote_ratio: float = 0.9, 
+        cold_remote_ratio: float = 0.1
+):
+    """
+    生成同时具备 [源端Rank偏斜] 和 [目标Zipf偏斜] 的杀手级负载。
+    保证所有 GPU 初始 Token 数量绝对相等。
+    """
+    # --- 1. 参数验证 ---
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    if not (0 <= hot_remote_ratio <= 1.0):
+        raise ValueError(f"hot_remote_ratio must be in [0, 1], got {hot_remote_ratio}")
+    if not (0 <= cold_remote_ratio <= 1.0):
+        raise ValueError(f"cold_remote_ratio must be in [0, 1], got {cold_remote_ratio}")
+    
+    # 验证 hot_ranks 是否在合法范围内
+    if any(r < 0 or r >= config.gpus_per_node for r in hot_ranks):
+        raise ValueError(f"hot_ranks elements must be in [0, {config.gpus_per_node - 1}]")
+
+    # 验证专家数量是否足够
+    # 注意：这里做的是全局检查，更严格的检查在循环内部针对每个节点进行
+    if config.total_experts < config.top_k:
+        raise ValueError(f"Total experts ({config.total_experts}) must be >= top_k ({config.top_k})")
+
+    print(f"Start Generate Bimodal Skew Workloads...")
+    print(f" - Hot Ranks: {hot_ranks} (Remote Ratio: {hot_remote_ratio*100}%)")
+    print(f" - Cold Ranks Remote Ratio: {cold_remote_ratio*100}%")
+    print(f" - Global Target Zipf Alpha: {config.zipf_alpha}")
+
+    # 每个 GPU 的固定 Token 数量 (严格整除，丢弃余数以保证均匀)
+    if config.num_tokens % config.total_gpus != 0:
+        print(f"Warning: num_tokens ({config.num_tokens}) is not divisible by total_gpus ({config.total_gpus}). Remainder will be dropped.")
+    
+    tokens_per_gpu = config.num_tokens // config.total_gpus
+    
+    # 预先计算全局专家的 Zipf 概率分布 (用于跨机 Token 选择专家)
+    ranks = np.arange(1, config.total_experts + 1)
+    weights = 1.0 / np.power(ranks, config.zipf_alpha)
+    zipf_prob_vector = weights / np.sum(weights)
+
+    total_generated_count = 0
+
+    for iter_idx in range(config.iter_num):
+        iter_data = []
+        print(f"Generating Iter:{iter_idx}/{config.iter_num - 1}...")
+        
+        # 重置每轮迭代的 token_id 计数器 (如果需要全局唯一，可不重置，但通常按迭代隔离)
+        current_iter_token_id = 0
+
+        for layer_id in tqdm(range(config.num_layers), desc="Layers"):
+            layer_request = []
+            
+            # 遍历每一个物理 GPU
+            for gpu_id in range(config.total_gpus):
+                node_id = gpu_id // config.gpus_per_node
+                local_rank = gpu_id % config.gpus_per_node
+                
+                # 划分本地专家和远程专家
+                local_expert_ids = [e for e, g in cluster.expert_to_gpu.items() if g // config.gpus_per_node == node_id]
+                local_expert_set = set(local_expert_ids)
+                remote_expert_ids_count = config.total_experts - len(local_expert_ids)
+
+                # 检查专家数量是否满足 top_k
+                if len(local_expert_ids) < config.top_k:
+                     # 如果本地专家不足，无法生成纯本地 Token (不重复)
+                     # 这里选择抛出异常，或者根据需求改为允许重复
+                     raise ValueError(f"Node {node_id} has {len(local_expert_ids)} experts, but top_k is {config.top_k}. Cannot satisfy local request without replacement.")
+                
+                if remote_expert_ids_count < config.top_k:
+                    raise ValueError(f"Node {node_id} has {remote_expert_ids_count} remote experts, but top_k is {config.top_k}. Cannot satisfy remote request.")
+
+                # 根据 Rank 决定跨机比例
+                if local_rank in hot_ranks:
+                    num_remote = int(tokens_per_gpu * hot_remote_ratio)
+                else:
+                    num_remote = int(tokens_per_gpu * cold_remote_ratio)
+                
+                num_local = tokens_per_gpu - num_remote
+
+                # --- 1. 生成 Local Tokens ---
+                for _ in range(num_local):
+                    # 本地 Token 随机选择本地专家 (replace=False 保证不重复)
+                    candidates = np.random.choice(local_expert_ids, config.top_k, replace=False)
+                    target_experts = [int(exp) for exp in candidates]
+                        
+                    req = TokenRequest(token_id=current_iter_token_id, src_gpu=gpu_id, target_experts=target_experts)
+                    cluster.resolve_targets(req)
+                    layer_request.append(req)
+                    current_iter_token_id += 1
+                    total_generated_count += 1
+
+                # --- 2. 生成 Remote Tokens (带 Zipf 偏斜) ---
+                for _ in range(num_remote):
+                    target_experts = []
+                    
+                    # 使用 while 循环配合批量采样
+                    # 为避免极端情况下(虽有足够远程专家但概率极低)的死循环，可加最大重试限制，但此处依靠数学概率通常没问题
+                    while len(target_experts) < config.top_k:
+                        # 批量采样以提高效率 (2倍 top_k 通常足够)
+                        candidates = np.random.choice(
+                            config.total_experts,
+                            size=config.top_k * 2,
+                            p=zipf_prob_vector,
+                            replace=True
+                        )
+                        
+                        for exp in candidates:
+                            exp = int(exp)
+                            # 必须是远程专家 (不在 local_expert_set 中) 且未被选过
+                            if exp not in local_expert_set and exp not in target_experts:
+                                target_experts.append(exp)
+                                if len(target_experts) == config.top_k:
+                                    break
+                    
+                    req = TokenRequest(token_id=current_iter_token_id, src_gpu=gpu_id, target_experts=target_experts)
+                    cluster.resolve_targets(req)
+                    layer_request.append(req)
+                    current_iter_token_id += 1
+                    total_generated_count += 1
+            
+            iter_data.append(layer_request)
+        
+        # 保存数据
+        file_path = os.path.join(output_dir, f"iter_{iter_idx}_requests.pkl")
+        with open(file_path, "wb") as f:
+            pickle.dump(iter_data, f)
+        
+        del iter_data
+
+    print(f"Workload Generation Complete!")
+    print(f"Generated {total_generated_count} token requests in {output_dir}")
 if __name__ == "__main__":
     print("Test Generate Workload")
     args = get_args()
@@ -359,8 +496,22 @@ if __name__ == "__main__":
     cluster = Cluster(config)
     hot_experts = [0, 4, 18, 28, 36, 40, 54, 63]
     hot_traffic_ratio = 0.5
+    
+    hot_ranks = [0, 1]
+    hot_remote_ratio = 0.8
+    cold_remote_ratio = 0.2
     # generate_workload_zipf(config, cluster, args.workload_output_dir)
     # generate_workload_dirichlet(config, cluster, args.workload_output_dir)
     # generate_workload_custom(config, cluster, args.workload_output_dir, hot_experts, hot_traffic_ratio)
-    generate_workload_zipf_custom(config, cluster, args.workload_output_dir)
-    analyze_pkl_workload(args.workload_output_dir, config.total_gpus)
+    # generate_workload_zipf_custom(config, cluster, args.workload_output_dir)
+    generate_workload_bimodal_skew(
+        config=config,
+        cluster=cluster,
+        output_dir=args.workload_output_dir,
+        hot_ranks=hot_ranks,
+        hot_remote_ratio=hot_remote_ratio,
+        cold_remote_ratio=cold_remote_ratio
+    )
+    analyze_bimodal_skew(
+        args.workload_output_dir, config, hot_ranks, hot_remote_ratio, cold_remote_ratio, cluster
+    )
