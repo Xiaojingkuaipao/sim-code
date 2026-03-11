@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from generate_workload import generate_workload_bimodal_skew
 from common import SimConfig, Cluster, TokenRequest
 
-def analyze_bimodal_skew(workload_dir, config, hot_ranks, hot_remote_ratio, cold_remote_ratio):
+def analyze_bimodal_skew(workload_dir, config, hot_ranks, hot_remote_ratio, cold_remote_ratio, cluster):
     print("\nStarting Analysis of Bimodal Skew Workload...")
     
     # 1. Load Data
@@ -136,4 +136,5 @@ if __name__ == "__main__":
     )
     
     # 3. Analyze Workload
-    analyze_bimodal_skew(output_dir, config, hot_ranks, hot_remote_ratio, cold_remote_ratio)
+    print("Analyzing Workload...")
+    analyze_bimodal_skew(output_dir, config, hot_ranks, hot_remote_ratio, cold_remote_ratio, cluster)

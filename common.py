@@ -178,6 +178,9 @@ def get_args():
     parser.add_argument("--iter_num", default=1, type=int)
     parser.add_argument("--workload_output_dir", default="./workload", type=str)
     parser.add_argument("--init_pattern", default="deepEP", type=str, choices=["deepEP", "ours"])
+    parser.add_argument("--hot_rank_ratio", default=0.5, type=float)
+    parser.add_argument("--hot_remote_ratio", nargs=2, type=float, default=[0.4, 0.5], help="hot rank的跨机token比例区间")
+    parser.add_argument("--cold_remote_ratio", nargs=2, type=float, default=[0.1, 0.2], help="cold rank的跨机token比例区间")
     return parser.parse_args()
 
 def get_config(args) -> SimConfig:

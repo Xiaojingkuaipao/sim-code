@@ -136,7 +136,7 @@ def analyze_bimodal_skew(workload_dir, config, hot_ranks, hot_remote_ratio, cold
                 src_stats[req.src_gpu]['remote'] += 1
                 remote_target_expert_counts[exp_id] += 1
 
-    # --- Plot 1: Source Skew (Local vs Remote Ratio) ---
+    # Plot 1: Source Skew (Local vs Remote Ratio)
     plt.figure(figsize=(15, 6))
     gpu_ids = np.arange(config.total_gpus)
     local_counts = [src_stats[i]['local'] for i in gpu_ids]
@@ -173,7 +173,7 @@ def analyze_bimodal_skew(workload_dir, config, hot_ranks, hot_remote_ratio, cold
         status = "PASS" if abs(actual - expected) < 0.05 else "FAIL" # Allow some deviation due to integer rounding
         print(f"GPU {gpu_id:02d} (Rank {local_rank}): Remote Ratio = {actual:.4f} (Expected {expected:.2f}) -> {status}")
 
-    # --- Plot 2: Target Skew (Remote Token Destination Zipf) ---
+    # Plot 2: Target Skew (Remote Token Destination Zipf) 
     plt.figure(figsize=(15, 6))
     
     # Sort experts by frequency to see the curve
