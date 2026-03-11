@@ -56,7 +56,7 @@ run_experiment() {
     python deepEP.py "${args[@]}" 2>&1 | tee -a ${LOG_FILE}
 
     echo -e "\n[3/4] Running FAST Baseline..." | tee -a ${LOG_FILE}
-    python FAST.py "${args[@]}" 2>&1 | tee -a ${LOG_FILE}
+    python fast.py "${args[@]}" 2>&1 | tee -a ${LOG_FILE}
 
     echo -e "\n[4/4] Running Ours..." | tee -a ${LOG_FILE}
     python ours-simulator-fine.py "${args[@]}" 2>&1 | tee -a ${LOG_FILE}

@@ -297,4 +297,4 @@ if __name__ == "__main__":
         hot_remote_ratio=args.hot_remote_ratio,
         cold_remote_ratio=args.cold_remote_ratio
     )
-    analyze_bimodal_skew(args.workload_output_dir, config, cluster)
+    # analyze_bimodal_skew(args.workload_output_dir, config, cluster)
