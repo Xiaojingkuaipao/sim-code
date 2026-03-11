@@ -71,7 +71,6 @@ class OurSimulator:
         # 上一轮结束后清空负载
         for gpu in self.gpus:
             gpu.reset()
-        start = time.perf_counter()
         # 存储所有的(token node) 流
         all_flows: list[Flow] = []
         for req in requests:
@@ -174,8 +173,6 @@ class OurSimulator:
                 current_loads[g_h] -= 1
                 current_loads[g_c] += 1
         
-        end = time.perf_counter()
-        print(f"调度总开销：{(end - start) * 1000:.3f} ms")
         # step4 计算总开销
         
         total_inter_token = 0

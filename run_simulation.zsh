@@ -5,7 +5,7 @@ LOG_DIR="./logs"
 mkdir -p ${LOG_DIR}
 LOG_FILE="${LOG_DIR}/experiment_$(date +%Y%m%d_%H%M%S).log"
 
-echo "Starting All Experiments... Logs will be saved to ${LOG_FILE}" | tee -a ${LOG_FILE}
+echo "Starting Simulation Experiments... Logs will be saved to ${LOG_FILE}" | tee -a ${LOG_FILE}
 
 # 固定的全局参数
 SEQ_LEN=8192
@@ -34,7 +34,7 @@ run_experiment() {
         --batch_size ${batch_size}
         --topk ${topk}
         --zipf_alpha ${zipf}
-        --workload_output_dir "./workload"
+        --workload_output_dir "./new_test_workload"
     )
 
     echo "\n[1/4] Generating Workload..." | tee -a ${LOG_FILE}
